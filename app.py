@@ -1,36 +1,481 @@
 import flet as ft
+from datetime import datetime
+import requests
+from escpos.printer import Usb
+import time
+
+class ApplicationState:
+    def __init__(self):
+        self.previous_pending_count = 0
+        self.currentOrder = None
+        self.currentId = 1
+        self.orderArray = []
+        self.detailsToPrint = []
+        self.orderToPrint = None
+
+app_state = ApplicationState()
+
+class OrderInfo():
+    def __init__(self, id: str, name: str, total: str, date: str, delete_order=None, consult_order=None):
+        self.id = str(id)
+        self.name = name
+        self.total = str(total)
+        self.date = date
+        self.delete_order = delete_order
+        self.consult_order = consult_order
+
+class Order(ft.ResponsiveRow):
+    def __init__(self, order: OrderInfo, delete_order, consult_order):
+        super().__init__()
+        self.delete_order = delete_order
+        self.consult_order = consult_order
+        self.order = order
+        self.vertical_alignment = "center"
+        self.spacing = 15
+        self.controls = [
+            ft.Column(
+                col=6,
+                controls=[
+                    ft.Text(value=" Nombre y ID: " + order.name + " #"+order.id, size=20, weight=ft.FontWeight.W_300),
+                    ft.Text(value=" Total: " + order.total + "$", size=20),
+                    ft.Text(value=" Fecha y Hora: " + order.date, size=20)
+                ],
+            ),
+            ft.Column(
+                col=6,
+                controls=[
+                    ft.Row(
+                        controls=[
+                            ft.ElevatedButton(
+                                content=ft.Container(
+                                    content=ft.Row(
+                                        [
+                                            ft.Text(value="Ver Detalles", size=20),
+                                            ft.Icon(name=ft.icons.VISIBILITY, color="blue"),
+                                        ],
+                                        alignment=ft.MainAxisAlignment.CENTER,
+                                        spacing=5,
+                                    ),
+                                    padding=ft.padding.all(10),
+                                    on_click=self.view_clicked,
+                                ),
+                            ),
+                            ft.ElevatedButton(
+                                content=ft.Container(
+                                    content=ft.Row(
+                                        [
+                                            ft.Text(value="Eliminar Orden", size=20),
+                                            ft.Icon(name=ft.icons.DELETE, color="red"),
+                                        ],
+                                        alignment=ft.MainAxisAlignment.CENTER,
+                                        spacing=5,
+                                    ),
+                                    padding=ft.padding.all(10),
+                                    on_click=self.delete_clicked,
+                                ),
+                            ),
+                        ],
+                    ),
+                ],
+            ),
+        ]
+
+    def view_clicked(self, e):
+        self.consult_order(self.order, self)
+        pass
+
+    def delete_clicked(self, e):
+        self.delete_order(self, self.order)
+        pass
+
+def print_receipt():
+    # You need to replace these with the correct values for your printer
+    # Vendor ID and Product ID can be found in your printer's manual or system device manager
+    VENDOR_ID = 0x04b8
+    PRODUCT_ID = 0x0e28
+    try:
+        # Initialize USB printer - this will need to be specific to your printer's connection
+        printer = Usb(VENDOR_ID, PRODUCT_ID)
+
+        # Ticket Header
+        printer.set(align='center', bold=True, height=2, width=2)
+        printer.text("Puesto BASAÑEZ\n")
+        # Reset to normal text after printing the header
+        printer.set(bold=False, height=1, width=1)
+        printer.text("Cristóbal Colón 401, Zona Centro, 89000 Tampico.\n")
+        printer.text("Tel: 833 315 3054\n")
+        printer.text("Orden #"+app_state.orderToPrint.id+"\n")
+        printer.text(datetime.now().strftime("%Y-%m-%d %H:%M:%S\n"))
+        printer.text("--------------------------------\n")
+
+        # Print column headers
+        printer.set(align='left', bold=True)
+        printer.text("ARTICULO    CANT.           TOTAL\n")
+        printer.text("------------------------------------------------\n")
+        printer.set(bold=False) 
+        
+        # Print each item detail
+        for item in app_state.detailsToPrint:
+            name = item['name'][:12].ljust(12)
+            # Assuming quantity is a separate field, or a fixed value if not available
+            quantity = "1"  # Replace with actual quantity if available
+            unit = item['unit']['name'][:8].rjust(8)
+            # Assuming total price needs to be calculated
+            total_price = float(quantity) * item['priceUnit']
+            total = f"${total_price:.2f}".rjust(12)
+
+            line = f"{name}{quantity} {unit}{total}\n"
+            printer.text(line)
+        printer.text("------------------------------------------------\n")
+
+        # Add space before the total
+        printer.text("\n")
+
+        # Print total in bold with larger font
+        printer.set(align='center',bold=True, height=2, width=2)
+        printer.text("Total: $" + app_state.orderToPrint.total + "\n")
+        # Reset to normal text after printing the total
+        printer.set(bold=False, height=1, width=1)
+        printer.text("--------------------------------\n")
+
+        printer.text("\n")
+
+        # Footer
+        printer.text("¡Gracias por su compra!\n")
+        printer.text("¡Regrese pronto!\n")
+
+        # Barcode or QR Code
+        printer.qr("https://penstagram.theowlclub.net/uploads/default/original/3X/6/e/6eb941f8e13372e4c9ba814e73cb402f5af35618.jpeg")
+        #convert the order id to a string EAN8 barcode
+
+        order_id_str = str(app_state.orderToPrint.id)
+        # Pad or truncate the order ID to make it 8 digits long
+        order_id_str = order_id_str[:8].rjust(8, '0')
+
+        # Print the barcode
+        printer.barcode(order_id_str, 'EAN8')
+        
+        # Ensure data is sent before closing
+        printer.cut()
+    except Exception as e:
+        print(f"Error: {e}")
+
+def get_orders_from_api():
+    try:
+        response = requests.get("http://localhost:3000/order")
+        response.raise_for_status()  # Raises an HTTPError if the HTTP request returned an unsuccessful status code
+        orders = response.json()
+        # process orders and show only those with status == 'PENDING'
+        orders = [order for order in orders if order["status"] == "PENDING"]
+        return orders
+    except requests.RequestException as e:
+        print(f"Error fetching orders: {e}")
+        return []
 
 def main(page: ft.Page):
-    page.title = "Local BRP"
-    page.vertical_alignment = ft.MainAxisAlignment.CENTER
+    app_state.previous_pending_count = 0
+    page.horizontal_alignment = "stretch"
+    page.title = "Manejo de Ordenes"
+    page.window_width = 1080       
+    page.window_height = 720       
+    page.window_resizable = False 
+    #page.theme_mode = ft.ThemeMode.LIGHT #turn on dark mode
 
-    txt_number = ft.TextField(value="0", text_align=ft.TextAlign.RIGHT, width=100)
+    def get_orders(e):
+        orders_data = get_orders_from_api()
 
-    def minus_click(e):
-        txt_number.value = str(int(txt_number.value) - 1)
+        for order_data in orders_data:
+            order = OrderInfo(
+                id=order_data["id"],
+                name=order_data["name"],
+                total=order_data["total"],
+                date=order_data["date"],  # Format this date as needed
+                delete_order=delete_order,  # Replace with actual delete order function
+                consult_order=consult_order  # Replace with actual consult order function
+            )
+            #compare the order with the orderArray to see if it is already in the array
+            if not any(order.id == orderInArray.id for orderInArray in app_state.orderArray):
+                app_state.orderArray.append(order)
+                page.pubsub.send_all(order)
+        
         page.update()
 
-    def plus_click(e):
-        txt_number.value = str(int(txt_number.value) + 1)
+    def update_orders(e):
+        # Fetch the current list of orders from the API
+        orders_data = get_orders_from_api()
+
+        # Create OrderInfo objects
+        fetched_orders = []
+        for order_data in orders_data:
+            order = OrderInfo(
+                id=order_data["id"],
+                name=order_data["name"],
+                total=order_data["total"],
+                date=order_data["date"],  # Format this date as needed
+                delete_order=delete_order,  # Replace with actual delete order function
+                consult_order=consult_order  # Replace with actual consult order function
+            )
+            fetched_orders.append(order)
+
+        # Identify deleted orders: those that are in app_state.orderArray but not in fetched_orders
+        deleted_orders = [order for order in app_state.orderArray if not any(order.id == fetched_order.id for fetched_order in fetched_orders)]
+
+        # Remove deleted orders from orderList
+        for order in deleted_orders:
+            # Find the corresponding control in orderList
+            order_control = next((control for control in orderList.controls if getattr(control, 'order', None) and control.order.id == order.id), None)
+            if order_control:
+                orderList.controls.remove(order_control)
+
+        # Update app_state.orderArray to reflect the current fetched orders
+        app_state.orderArray = fetched_orders
+
         page.update()
 
-    page.add(
-        ft.Row(
-            [
-                ft.IconButton(ft.icons.REMOVE, on_click=minus_click),
-                txt_number,
-                ft.IconButton(ft.icons.ADD, on_click=plus_click),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-        ),
-        ft.Row(
-            [
-                ft.IconButton(ft.icons.REMOVE, on_click=minus_click),
-                txt_number,
-                ft.IconButton(ft.icons.ADD, on_click=plus_click),
-            ],
-            alignment=ft.MainAxisAlignment.CENTER,
-        )
+
+    def query_api_periodically():
+        print("Starting API query loop")
+        while True:
+            response = requests.get("http://localhost:3000/order")
+            if response.status_code == 200:
+                data = response.json()
+                current_pending_count = sum(1 for order in data if order['status'] == 'PENDING')
+                print(f"Current pending count: {current_pending_count}")
+                if current_pending_count > app_state.previous_pending_count:
+                    print("New order(s) found!")
+                    get_orders(e=None)
+                    app_state.previous_pending_count = current_pending_count
+                elif current_pending_count < app_state.previous_pending_count:
+                    print("Order(s) deleted!")
+                    update_orders(e=None)
+                    app_state.previous_pending_count = current_pending_count
+            else:
+                print(f"Error fetching orders: {response.status_code}")
+            time.sleep(5)
+
+    def on_order(order: OrderInfo):
+        orderList.controls.append(Order(order, delete_order, consult_order))
+        page.update()
+
+    def delete_order(orderObj: OrderInfo, order: Order ):
+        orderList.controls.remove(orderObj)
+        app_state.previous_pending_count = app_state.previous_pending_count - 1
+        delete_order_details(order.id)
+        page.update()
+
+    def close_dlg(e):
+        app_state.currentOrder = OrderInfo("1","Rene", "223.20", "2021-09-01T12:00:00", None, None)
+        app_state.currentId = 0
+        dlg_modal.open = False
+        page.update()
+
+    def close_delete(e):
+        dlg_modal.open = False
+        orderList.controls.remove(app_state.currentOrder)
+        delete_order_details(app_state.currentId)
+        app_state.currentId = 0
+        app_state.previous_pending_count = app_state.previous_pending_count - 1
+        page.update()
+
+    def delete_order_details(order_id):
+        try:
+            # Construct the API endpoint URL
+            api_url = f'http://localhost:3000/order/{order_id}/details'
+
+            # Send the DELETE request and await the response
+            response = requests.delete(api_url)
+
+            if response.status_code == 200:
+                print("Order details successfully deleted.")
+                # Process successful deletion here
+            else:
+                print(f"Failed to delete order details. Status code: {response.status_code}")
+                # Process failure here
+        except Exception as e:
+            print(f"An error occurred: {e}")
+            # Handle any exceptions such as network errors
+
+    def close_release(e):
+        dlg_modal.open = False 
+        orderList.controls.remove(app_state.currentOrder)
+        release_order(app_state.currentId)
+        app_state.currentId = 0
+        app_state.previous_pending_count = app_state.previous_pending_count - 1
+        page.update()
+
+    def release_order(order_id):
+        if True:
+            print_receipt()
+        else:
+            try:
+                # Construct the API endpoint URL
+                api_url = f'http://localhost:3000/order/{order_id}/release'
+                response = requests.post(api_url)
+
+                if response.status_code == 201:
+                    print("Order successfully released.")
+                    # Process successful release here
+                else:
+                    print(f"Failed to release order. Status code: {response.status_code}")
+                    # Process failure here
+            except Exception as e:
+                print(f"An error occurred: {e}")
+                # Handle any exceptions such as network errors
+
+    orderDetailList = ft.ListView(
+        expand=True,
+        divider_thickness=2,
+        spacing=5,
+        auto_scroll=True,
     )
 
-ft.app(target=main)
+    dlg_modal = ft.AlertDialog(
+        modal=True,
+        title=ft.Text(value="Confirmacion de orden:"),
+        content=ft.Column(
+            controls=[
+                ft.Row(
+                    controls=[
+                        ft.Text(value="Loading", size=20)
+                    ],
+                    spacing=10
+                )
+            ],
+            spacing=10
+        ),
+        actions=[
+            ft.ElevatedButton(
+                width=270,
+                height=50,
+                content=ft.Row(
+                    [
+                        ft.Text(value="Confirmar e Imprimir", size=18),
+                        ft.Icon(name=ft.icons.PRINT, color="green"),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_AROUND,
+                ),
+                on_click=close_release),
+            ft.ElevatedButton(
+                width=220,
+                height=50,
+                content=ft.Row(
+                    [
+                        ft.Text(value="Eliminar Orden", size=18),
+                        ft.Icon(name=ft.icons.DELETE, color="red"),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_AROUND,
+                ),
+                on_click=close_delete),
+            ft.ElevatedButton(
+                width=170,
+                height=50,
+                content=ft.Row(
+                    [
+                        ft.Text(value="Regresar", size=18),
+                        ft.Icon(name=ft.icons.KEYBOARD_RETURN, color="blue"),
+                    ],
+                    alignment=ft.MainAxisAlignment.SPACE_AROUND,
+                ),
+                on_click=close_dlg),
+        ],
+        actions_alignment=ft.MainAxisAlignment,
+        on_dismiss=lambda e: print("Modal dialog dismissed!"),
+    )
+
+    def consult_order(order: OrderInfo, orderObj: OrderInfo):
+        app_state.currentOrder = orderObj
+        app_state.currentId = order.id
+        app_state.orderToPrint = order
+
+        response = requests.get(f'http://localhost:3000/order-detail/order/{order.id}')
+
+        if response.status_code == 200:
+            items = response.json()
+            orderDetailList.controls.clear()  # Clear existing content in orderDetailList
+            app_state.detailsToPrint.clear()
+            for item in items:
+                product = item['product']
+                app_state.detailsToPrint.append(product)
+                detailItem = ft.Column(
+                    controls=[
+                        ft.Text(value="Producto: " + product['name'], size=18),
+                        ft.Text(value="Cantidad y Unidad: " + str(item['quantity']) + " " + product['unit']['name'], size=18),
+                        ft.Text(value="Total: $" + str(item['price']), size=18),
+                    ],
+                    spacing=5
+                )
+                orderDetailList.controls.append(detailItem)
+        else:
+            # Handle errors, such as order not found or server errors
+            print("Error fetching order details")
+            orderDetailList.controls.clear()  # Clear existing content in case of error
+            detailItem = ft.Column(
+                controls=[
+                    ft.Text(value="Error fetching order details", size=18),
+                ],
+                spacing=5
+            )
+            orderDetailList.controls.append(detailItem)
+
+        dlg_modal.content.controls.clear()  # Clear existing content in dlg_modal
+
+        # Create the order header
+        orderHeader = [
+            ft.Text(value="ID: " + order.name + " #" + order.id, size=20),
+            ft.Text(value="Total: " + order.total, size=20),
+            ft.Text(value="Fecha y Hora: " + order.date, size=20)
+        ]
+
+        # Add the header to dlg_modal first
+        dlg_modal.content.controls.extend(orderHeader)
+
+        # Then add the updated orderDetailList
+        dlg_modal.content.controls.append(orderDetailList)
+
+        open_dlg_modal(e=None)  # Open or refresh the modal dialog
+
+    def open_dlg_modal(e):
+        page.dialog = dlg_modal
+        dlg_modal.open = True
+        page.update()
+    
+    page.pubsub.subscribe(on_order)
+
+    orderList = ft.ListView(
+        expand=True,
+        divider_thickness=2,
+        spacing=10,
+        auto_scroll=True,
+    )
+
+    page.add(
+        ft.Container(
+            content=orderList,
+            border=ft.border.all(1, ft.colors.OUTLINE),
+            border_radius=5,
+            padding=10,
+            expand=True,
+        ),
+        ft.ResponsiveRow(
+            [
+                ft.ElevatedButton(
+                    content=ft.Container(
+                        content=ft.Row(
+                            [
+                                ft.Text(value="Recargar Ordenes", size=20),
+                                ft.Icon(name=ft.icons.REFRESH, color="blue"),
+                            ],
+                            alignment=ft.MainAxisAlignment.CENTER,
+                            spacing=5,
+                        ),
+                        padding=ft.padding.all(10),
+                        on_click=get_orders,
+                    ),
+                ),
+            ]
+        ),
+    )
+    query_api_periodically()
+
+if __name__ == "__main__":
+   ft.app(target=main)
