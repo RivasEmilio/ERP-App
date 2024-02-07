@@ -4,6 +4,21 @@ import requests
 from escpos.printer import Usb
 import time
 
+months_in_spanish = {
+    "January": "Enero",
+    "February": "Febrero",
+    "March": "Marzo",
+    "April": "Abril",
+    "May": "Mayo",
+    "June": "Junio",
+    "July": "Julio",
+    "August": "Agosto",
+    "September": "Septiembre",
+    "October": "Octubre",
+    "November": "Noviembre",
+    "December": "Diciembre"
+}
+
 class ApplicationState:
     def __init__(self):
         self.previous_pending_count = 0
@@ -12,6 +27,8 @@ class ApplicationState:
         self.orderArray = []
         self.detailsToPrint = []
         self.orderToPrint = None
+        self.run_query = True
+        self.modal_open = False
 
 app_state = ApplicationState()
 
@@ -36,7 +53,7 @@ class Order(ft.ResponsiveRow):
             ft.Column(
                 col=6,
                 controls=[
-                    ft.Text(value=" Nombre y ID: " + order.name + " #"+order.id, size=20, weight=ft.FontWeight.W_300),
+                    ft.Text(value=" Nombre y ID: " + order.name + " #"+order.id, size=20, weight=ft.FontWeight.W_400),
                     ft.Text(value=" Total: " + order.total + "$", size=20),
                     ft.Text(value=" Fecha y Hora: " + order.date, size=20)
                 ],
@@ -98,7 +115,7 @@ def print_receipt():
         printer = Usb(VENDOR_ID, PRODUCT_ID)
 
         # Ticket Header
-        printer.set(align='center', bold=True, height=2, width=2)
+        printer.set(bold=True, height=2, width=2)
         printer.text("Puesto BASAÑEZ\n")
         # Reset to normal text after printing the header
         printer.set(bold=False, height=1, width=1)
@@ -145,20 +162,21 @@ def print_receipt():
         printer.text("¡Regrese pronto!\n")
 
         # Barcode or QR Code
-        printer.qr("https://penstagram.theowlclub.net/uploads/default/original/3X/6/e/6eb941f8e13372e4c9ba814e73cb402f5af35618.jpeg")
+        printer.qr("https://wa.me/message/JBQLUVO2WXMJJ1")
         #convert the order id to a string EAN8 barcode
 
         order_id_str = str(app_state.orderToPrint.id)
         # Pad or truncate the order ID to make it 8 digits long
         order_id_str = order_id_str[:8].rjust(8, '0')
-
+        
         # Print the barcode
         printer.barcode(order_id_str, 'EAN8')
         
         # Ensure data is sent before closing
         printer.cut()
+        return True, "Receipt printed successfully."
     except Exception as e:
-        print(f"Error: {e}")
+        return False, f"Error printing receipt: {e}"
 
 def get_orders_from_api():
     try:
@@ -179,17 +197,37 @@ def main(page: ft.Page):
     page.window_width = 1080       
     page.window_height = 720       
     page.window_resizable = False 
-    #page.theme_mode = ft.ThemeMode.LIGHT #turn on dark mode
+    page.theme_mode = ft.ThemeMode.LIGHT #turn on dark mode
+
+    def format_iso_date(iso_date_str):
+        iso_date = iso_date_str.rstrip("Z")
+        if "." in iso_date:  # Check if milliseconds are present
+            date_format = "%Y-%m-%dT%H:%M:%S.%f"
+        else:
+            date_format = "%Y-%m-%dT%H:%M:%S"
+
+        # Parse the ISO format date string to a datetime object
+        date_object = datetime.strptime(iso_date, date_format)
+        
+        # Manually format the date using the month mapping
+        month = months_in_spanish[date_object.strftime("%B")]
+        formatted_date = date_object.strftime(f"%d de {month} de %Y, %I:%M %p")
+        
+        return formatted_date
 
     def get_orders(e):
         orders_data = get_orders_from_api()
 
         for order_data in orders_data:
+        
+            # Format the date to a more readable format, e.g., "September 1, 2021, 12:00 PM"
+            formatted_date = format_iso_date(order_data["date"])
+
             order = OrderInfo(
                 id=order_data["id"],
                 name=order_data["name"],
                 total=order_data["total"],
-                date=order_data["date"],  # Format this date as needed
+                date=formatted_date,  # Format this date as needed
                 delete_order=delete_order,  # Replace with actual delete order function
                 consult_order=consult_order  # Replace with actual consult order function
             )
@@ -232,26 +270,26 @@ def main(page: ft.Page):
 
         page.update()
 
-
     def query_api_periodically():
         print("Starting API query loop")
         while True:
-            response = requests.get("http://localhost:3000/order")
-            if response.status_code == 200:
-                data = response.json()
-                current_pending_count = sum(1 for order in data if order['status'] == 'PENDING')
-                print(f"Current pending count: {current_pending_count}")
-                if current_pending_count > app_state.previous_pending_count:
-                    print("New order(s) found!")
-                    get_orders(e=None)
-                    app_state.previous_pending_count = current_pending_count
-                elif current_pending_count < app_state.previous_pending_count:
-                    print("Order(s) deleted!")
-                    update_orders(e=None)
-                    app_state.previous_pending_count = current_pending_count
-            else:
-                print(f"Error fetching orders: {response.status_code}")
-            time.sleep(5)
+            if app_state.run_query and app_state.modal_open == False:
+                response = requests.get("http://localhost:3000/order")
+                if response.status_code == 200:
+                    data = response.json()
+                    current_pending_count = sum(1 for order in data if order['status'] == 'PENDING')
+                    print(f"Current pending count: {current_pending_count}")
+                    if current_pending_count > app_state.previous_pending_count:
+                        print("New order(s) found!")
+                        get_orders(e=None)
+                        app_state.previous_pending_count = current_pending_count
+                    elif current_pending_count < app_state.previous_pending_count:
+                        print("Order(s) deleted!")
+                        update_orders(e=None)
+                        app_state.previous_pending_count = current_pending_count
+                else:
+                    print(f"Error fetching orders: {response.status_code}")
+                time.sleep(5)
 
     def on_order(order: OrderInfo):
         orderList.controls.append(Order(order, delete_order, consult_order))
@@ -264,18 +302,19 @@ def main(page: ft.Page):
         page.update()
 
     def close_dlg(e):
-        app_state.currentOrder = OrderInfo("1","Rene", "223.20", "2021-09-01T12:00:00", None, None)
+        #app_state.currentOrder = OrderInfo("1","Rene", "223.20", "2021-09-01T12:00:00", None, None)
+        app_state.modal_open = False 
         app_state.currentId = 0
+        app_state.run_query = True
         dlg_modal.open = False
         page.update()
+        page.dialog = None
 
     def close_delete(e):
-        dlg_modal.open = False
         orderList.controls.remove(app_state.currentOrder)
+        close_dlg(e)
         delete_order_details(app_state.currentId)
-        app_state.currentId = 0
         app_state.previous_pending_count = app_state.previous_pending_count - 1
-        page.update()
 
     def delete_order_details(order_id):
         try:
@@ -296,39 +335,43 @@ def main(page: ft.Page):
             # Handle any exceptions such as network errors
 
     def close_release(e):
-        dlg_modal.open = False 
-        orderList.controls.remove(app_state.currentOrder)
-        release_order(app_state.currentId)
-        app_state.currentId = 0
-        app_state.previous_pending_count = app_state.previous_pending_count - 1
-        page.update()
+        receipt_response = print_receipt()
+        if receipt_response == True:
+            release_response = release_order(app_state.currentId)
+            if release_response == None:
+                app_state.currentId = 0
+                orderList.controls.remove(app_state.currentOrder)
+                app_state.previous_pending_count = app_state.previous_pending_count - 1
+            else:
+                print(release_response)
+                show_banner_click(e)
+                #open_error_modal(e)
+        else:
+            print(receipt_response)
+            show_banner_click(e)
+            #open_error_modal(e)
+        close_dlg(e)
 
     def release_order(order_id):
-        if True:
-            print_receipt()
-        else:
-            try:
-                # Construct the API endpoint URL
-                api_url = f'http://localhost:3000/order/{order_id}/release'
-                response = requests.post(api_url)
+        try:
+            # Construct the API endpoint URL
+            api_url = f'http://localhost:3000/order/{order_id}/release'
+            response = requests.post(api_url)
 
-                if response.status_code == 201:
-                    print("Order successfully released.")
-                    # Process successful release here
-                else:
-                    print(f"Failed to release order. Status code: {response.status_code}")
-                    # Process failure here
-            except Exception as e:
-                print(f"An error occurred: {e}")
-                # Handle any exceptions such as network errors
+            if response.status_code == 201:
+                print("Order successfully released.")
+            else:
+                print(f"Failed to release order. Status code: {response.status_code}")
+        except Exception as e:
+            print(f"An error occurred: {e}")     
 
     orderDetailList = ft.ListView(
         expand=True,
         divider_thickness=2,
         spacing=5,
-        auto_scroll=True,
+        auto_scroll=False,
     )
-
+    
     dlg_modal = ft.AlertDialog(
         modal=True,
         title=ft.Text(value="Confirmacion de orden:"),
@@ -386,6 +429,7 @@ def main(page: ft.Page):
         app_state.currentOrder = orderObj
         app_state.currentId = order.id
         app_state.orderToPrint = order
+        print(f"Consulting order: {order.id}")
 
         response = requests.get(f'http://localhost:3000/order-detail/order/{order.id}')
 
@@ -432,11 +476,33 @@ def main(page: ft.Page):
         # Then add the updated orderDetailList
         dlg_modal.content.controls.append(orderDetailList)
 
-        open_dlg_modal(e=None)  # Open or refresh the modal dialog
+        open_dlg_modal(None)
 
     def open_dlg_modal(e):
-        page.dialog = dlg_modal
-        dlg_modal.open = True
+        if not app_state.modal_open:
+            page.dialog = dlg_modal
+            dlg_modal.open = True
+            page.update()
+            app_state.modal_open = True
+            app_state.run_query = False
+    
+    def close_banner(e):
+        page.banner.open = False
+        page.update()
+
+    page.banner = ft.Banner(
+        bgcolor=ft.colors.AMBER_100,
+        leading=ft.Icon(ft.icons.WARNING_AMBER_ROUNDED, color=ft.colors.AMBER, size=40),
+        content=ft.Text(
+            "Oops, ocurrio un error al imprimir el recibo. Por favor, intente de nuevo.",
+        size=20),
+        actions=[
+            ft.TextButton("Cerrar", icon="close", on_click=close_banner),
+        ],
+    )
+
+    def show_banner_click(e):
+        page.banner.open = True
         page.update()
     
     page.pubsub.subscribe(on_order)
@@ -445,7 +511,7 @@ def main(page: ft.Page):
         expand=True,
         divider_thickness=2,
         spacing=10,
-        auto_scroll=True,
+        auto_scroll=False,
     )
 
     page.add(
